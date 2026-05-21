@@ -1,0 +1,6 @@
+{
+  "name": "WooCommerce Verifier",
+  "description": "Enables merchants to view WooCommerce orders, parse transaction SMS messages, verify/authenticate order payment transaction IDs, and synchronize verification logs with private servers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

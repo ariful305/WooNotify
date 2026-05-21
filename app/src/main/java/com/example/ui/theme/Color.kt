@@ -1,0 +1,37 @@
+package com.example.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+// Professional Polish Color Palette (Material 3 Purple/Lavender/Slate)
+val PolishedPrimary = Color(0xFF6750A4)
+val PolishedOnPrimary = Color(0xFFFFFFFF)
+val PolishedPrimaryContainer = Color(0xFFEADDFF)
+val PolishedOnPrimaryContainer = Color(0xFF21005D)
+val PolishedBackground = Color(0xFFF7F2FA)
+val PolishedOnBackground = Color(0xFF1D1B20)
+val PolishedSurface = Color(0xFFFFFFFF)
+val PolishedOnSurface = Color(0xFF1D1B20)
+val PolishedSurfaceVariant = Color(0xFFF3EDF7)
+val PolishedOnSurfaceVariant = Color(0xFF49454F)
+val PolishedOutline = Color(0xFFCAC4D0)
+val PolishedSecondary = Color(0xFF625B71)
+val PolishedOnSecondary = Color(0xFFFFFFFF)
+val PolishedSecondaryContainer = Color(0xFFE8DEF8)
+val PolishedOnSecondaryContainer = Color(0xFF1D192B)
+
+// Professional Polish Dark Palette
+val PolishedDarkPrimary = Color(0xFFD0BCFF)
+val PolishedDarkOnPrimary = Color(0xFF381E72)
+val PolishedDarkPrimaryContainer = Color(0xFF4F378B)
+val PolishedDarkOnPrimaryContainer = Color(0xFFEADDFF)
+val PolishedDarkBackground = Color(0xFF141218)
+val PolishedDarkOnBackground = Color(0xFFE6E1E5)
+val PolishedDarkSurface = Color(0xFF1C1B1F)
+val PolishedDarkOnSurface = Color(0xFFE6E1E5)
+val PolishedDarkSurfaceVariant = Color(0xFF49454F)
+val PolishedDarkOnSurfaceVariant = Color(0xFFCAC4D0)
+val PolishedDarkOutline = Color(0xFF938F99)
+val PolishedDarkSecondary = Color(0xFFCCC2DC)
+val PolishedDarkOnSecondary = Color(0xFF332D41)
+val PolishedDarkSecondaryContainer = Color(0xFF4A4458)
+val PolishedDarkOnSecondaryContainer = Color(0xFFE8DEF8)

@@ -35,3 +35,22 @@ data class VerifyLogEntity(
     val serverResponse: String? = null,
     val timestamp: Long = System.currentTimeMillis()
 )
+
+@Entity(tableName = "cached_orders")
+data class CachedOrderEntity(
+    @PrimaryKey val id: Long,
+    val number: String,
+    val status: String,
+    val total: String,
+    val currency: String,
+    val dateCreated: String,
+    val paymentMethod: String,
+    val paymentMethodTitle: String,
+    val transactionId: String,
+    val customerName: String,
+    val customerEmail: String,
+    val customerPhone: String,
+    val itemsSummary: String,
+    val rawJson: String,
+    val cachedAt: Long = System.currentTimeMillis()
+)

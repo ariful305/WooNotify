@@ -4,6 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,13 +19,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.WooCommerceOrder
 import com.example.ui.MainViewModel
 import com.example.ui.OrdersUiState
+import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     viewModel: MainViewModel,
@@ -38,9 +42,20 @@ fun DashboardScreen(
     var searchQuery by remember { mutableStateOf("") }
     var showOnlyWithTxId by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    // Tab state: 0 = Recent Orders, 1 = All Orders
+    var selectedTab by remember { mutableStateOf(0) }
+    
+    // Details Popup State
+    var selectedOrderForDetails by remember { mutableStateOf<WooCommerceOrder?>(null) }
+    var showStatusDropdown by remember { mutableStateOf(false) }
+
+    val coroutineScope = rememberCoroutineScope()
+
+    // Trigger initial refresh in background silently if config is valid to populate DB without blocking UI
+    LaunchedEffect(config) {
         if (config.isValid && ordersList.isEmpty()) {
-            viewModel.refreshOrders()
+            // Fetch pending queue on launch
+            viewModel.refreshOrders(statusFilter = null) // status null = fetch all to populate cache quickly
         }
     }
 
@@ -87,29 +102,60 @@ fun DashboardScreen(
         }
 
         // Stats Row
+        val totalOrdersCount = ordersList.size
+        val withTxIdCount = ordersList.count { it.transactionId.isNotBlank() }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            val totalOrdersCount = ordersList.size
-            val withTxIdCount = ordersList.count { it.transactionId.isNotBlank() }
-
             StatsCard(
-                title = "Pending Total",
+                title = "Cached Total",
                 count = totalOrdersCount.toString(),
                 icon = Icons.Default.ShoppingCart,
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
                 modifier = Modifier.weight(1f)
             )
 
             StatsCard(
-                title = "Has TxID Label",
+                title = "Has TxID Token",
                 count = withTxIdCount.toString(),
                 icon = Icons.Default.CheckCircle,
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
                 modifier = Modifier.weight(1f)
+            )
+        }
+
+        // TAB BAR (Recent Orders vs All Orders)
+        TabRow(
+            selectedTabIndex = selectedTab,
+            modifier = Modifier.padding(bottom = 12.dp),
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.primary
+        ) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Recent Queue", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("All Synced (${ordersList.size})", fontWeight = FontWeight.SemiBold)
+                    }
+                }
             )
         }
 
@@ -123,7 +169,7 @@ fun DashboardScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Search by Order # or Name...") },
+                placeholder = { Text("Search number, name, phone...") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
                 modifier = Modifier
                     .weight(1f)
@@ -133,7 +179,14 @@ fun DashboardScreen(
             )
 
             IconButton(
-                onClick = { viewModel.refreshOrders() },
+                onClick = {
+                    // Refreshes the order items based on selected context tab
+                    if (selectedTab == 0) {
+                        viewModel.refreshOrders(statusFilter = "pending,on-hold,processing")
+                    } else {
+                        viewModel.refreshOrders(statusFilter = null)
+                    }
+                },
                 modifier = Modifier
                     .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
                     .testTag("refresh_orders_button"),
@@ -142,12 +195,12 @@ fun DashboardScreen(
                 if (ordersState is OrdersUiState.Loading) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 } else {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh WooCommerce orders list")
+                    Icon(Icons.Default.Refresh, contentDescription = "Manual sync pull")
                 }
             }
         }
 
-        // Filter Toggle
+        // Filter Checkbox row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -166,130 +219,296 @@ fun DashboardScreen(
             )
         }
 
+        // Filtering calculation
+        val filteredOrders = remember(selectedTab, ordersList, searchQuery, showOnlyWithTxId) {
+            ordersList.filter { order ->
+                // Apply Tab constraint
+                val statusMatches = if (selectedTab == 0) {
+                    order.status.equals("pending", true) ||
+                    order.status.equals("on-hold", true) ||
+                    order.status.equals("processing", true)
+                } else {
+                    true // All Orders tab displays everything
+                }
+
+                // Apply search parameters
+                val numMatches = order.number.contains(searchQuery, ignoreCase = true)
+                val nameMatches = order.billing.fullName.contains(searchQuery, ignoreCase = true)
+                val phoneMatches = order.billing.phone.contains(searchQuery, ignoreCase = true)
+                val searchMatches = searchQuery.isBlank() || numMatches || nameMatches || phoneMatches
+
+                // Apply TxID checkbox filter
+                val txidFilter = !showOnlyWithTxId || order.transactionId.isNotBlank()
+
+                statusMatches && searchMatches && txidFilter
+            }
+        }
+
         // List Header label
         Text(
-            text = "WooCommerce Orders (${ordersList.size})",
+            text = if (selectedTab == 0) "Action-Required Queue (${filteredOrders.size})" else "All Stored Client Orders (${filteredOrders.size})",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 8.dp)
+            modifier = Modifier.padding(bottom = 12.dp)
         )
 
-        // Filter calculation
-        val filteredOrders = ordersList.filter { order ->
-            val numMatches = order.number.contains(searchQuery, ignoreCase = true)
-            val nameMatches = order.billing.fullName.contains(searchQuery, ignoreCase = true)
-            val phoneMatches = order.billing.phone.contains(searchQuery, ignoreCase = true)
-            val baseMatch = searchQuery.isBlank() || numMatches || nameMatches || phoneMatches
-            val txidFilter = !showOnlyWithTxId || order.transactionId.isNotBlank()
-            baseMatch && txidFilter
-        }
-
-        when (val state = ordersState) {
-            is OrdersUiState.Loading -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
+        if (filteredOrders.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(32.dp)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("Fetching real WooCommerce checkout logs...")
-                    }
+                    Icon(
+                        imageVector = Icons.Default.ShoppingCart,
+                        contentDescription = "Empty",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(56.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "No orders displayable",
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (searchQuery.isNotBlank() || showOnlyWithTxId)
+                            "Try clearing searches or checkboxes"
+                        else "All actions are verified, synced, or the WooCommerce pending queue is empty.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = Alignment.CenterHorizontally.let { TextAlign.Center },
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    )
                 }
             }
-            is OrdersUiState.Error -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(16.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = "Error",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "Sync Encountered an Error",
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = state.message,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 16.dp)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(onClick = { viewModel.refreshOrders() }) {
-                            Text("Retry Sync")
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(filteredOrders, key = { it.id }) { order ->
+                    OrderCardItem(
+                        order = order,
+                        onSelectForVerify = {
+                            viewModel.selectOrderForVerification(order)
+                            onNavigateToMatch()
+                        },
+                        onCardClicked = {
+                            selectedOrderForDetails = order
                         }
-                    }
+                    )
                 }
             }
-            else -> {
-                if (filteredOrders.isEmpty()) {
+        }
+    }
+
+    // ORDER DETAIL DIALOG & WooCommerce STATUS CHANGER
+    selectedOrderForDetails?.let { order ->
+        AlertDialog(
+            onDismissRequest = { selectedOrderForDetails = null },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Order Details #${order.number}",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleLarge
+                    )
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ShoppingCart,
-                                contentDescription = "Empty",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier.size(56.dp)
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "No matching orders found",
-                                fontWeight = FontWeight.SemiBold,
-                                style = MaterialTheme.typography.bodyLarge
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = if (searchQuery.isNotBlank() || showOnlyWithTxId) 
-                                    "Try clearing search results or filters" 
-                                else "Congrats! All order transactions are verified or WooCommerce pending items queue is empty.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 24.dp)
-                            )
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        items(filteredOrders, key = { it.id }) { order ->
-                            OrderCardItem(
-                                order = order,
-                                onSelectForVerify = {
-                                    viewModel.selectOrderForVerification(order)
-                                    onNavigateToMatch()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                when (order.status.lowercase()) {
+                                    "completed" -> Color(0xFF10B981)
+                                    "processing" -> Color(0xFF3B82F6)
+                                    "on-hold" -> Color(0xFFF59E0B)
+                                    "pending" -> Color(0xFFEF4444)
+                                    else -> MaterialTheme.colorScheme.secondary
                                 }
                             )
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = order.status.uppercase(),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    HorizontalDivider()
+
+                    // Customer information
+                    Text("Customer Profile", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        DetailRow(label = "Name:", value = order.billing.fullName)
+                        DetailRow(label = "Email:", value = order.billing.email.ifBlank { "N/A" })
+                        DetailRow(label = "Phone:", value = order.billing.phone.ifBlank { "N/A" })
+                        DetailRow(label = "Address:", value = "${order.billing.address1}, ${order.billing.city}")
+                    }
+
+                    HorizontalDivider()
+
+                    // Payment details
+                    Text("Transaction & Payment", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        DetailRow(label = "Method:", value = order.paymentMethodTitle)
+                        DetailRow(
+                            label = "User TxID:",
+                            value = order.transactionId.ifBlank { "None supplied" },
+                            isMonospace = true,
+                            valueColor = if (order.transactionId.isNotBlank()) Color(0xFF0369A1) else Color.Red
+                        )
+                        DetailRow(label = "Date:", value = order.dateCreated)
+                    }
+
+                    HorizontalDivider()
+
+                    // Items summary list
+                    Text("Purchased Items", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        order.lineItems.forEach { item ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${item.quantity}x ${item.name}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${order.currency} ${item.total}",
+                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(start = 12.dp)
+                                )
+                            }
+                        }
+                        
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Total Checkout Price:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                            Text("${order.currency} ${order.total}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    // Change Status Action Drawer
+                    Text("Change WooCommerce Order Status", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = { showStatusDropdown = !showStatusDropdown },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Select New Status")
+                            }
+                        }
+                    }
+
+                    if (showStatusDropdown) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val statuses = listOf("pending", "on-hold", "processing", "completed", "cancelled")
+                            statuses.forEach { status ->
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.updateOrderStatus(order.id, status)
+                                            showStatusDropdown = false
+                                            selectedOrderForDetails = null
+                                        },
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = status.uppercase(),
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
+            },
+            confirmButton = {
+                TextButton(onClick = { selectedOrderForDetails = null }) {
+                    Text("Close")
+                }
             }
-        }
+        )
+    }
+}
+
+@Composable
+fun DetailRow(
+    label: String,
+    value: String,
+    isMonospace: Boolean = false,
+    valueColor: Color = Color.Unspecified
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(90.dp)
+        )
+        Text(
+            text = value,
+            fontSize = 13.sp,
+            color = valueColor,
+            fontWeight = if (isMonospace) FontWeight.Bold else FontWeight.Normal,
+            fontFamily = if (isMonospace) androidx.compose.ui.text.font.FontFamily.Monospace else null,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -326,10 +545,10 @@ fun StatsCard(
                     imageVector = icon,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = count,
                 style = MaterialTheme.typography.headlineLarge,
@@ -344,12 +563,13 @@ fun StatsCard(
 fun OrderCardItem(
     order: WooCommerceOrder,
     onSelectForVerify: () -> Unit,
+    onCardClicked: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onSelectForVerify() },
+            .clickable { onCardClicked() },
         shape = RoundedCornerShape(24.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -379,19 +599,50 @@ fun OrderCardItem(
                     )
                 }
 
-                // Total Tag
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer)
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = "${order.currency} ${order.total}",
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                // Status Indicator and Total Tag in Row
+                Column(horizontalAlignment = Alignment.End) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "${order.currency} ${order.total}",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                when (order.status.lowercase()) {
+                                    "completed" -> Color(0xFFD1FAE5)
+                                    "processing" -> Color(0xFFDBEAFE)
+                                    "on-hold" -> Color(0xFFFEF3C7)
+                                    "pending" -> Color(0xFFFEE2E2)
+                                    else -> MaterialTheme.colorScheme.surfaceVariant
+                                }
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = order.status.uppercase(),
+                            color = when (order.status.lowercase()) {
+                                "completed" -> Color(0xFF065F46)
+                                "processing" -> Color(0xFF1E40AF)
+                                "on-hold" -> Color(0xFF92400E)
+                                "pending" -> Color(0xFF991B1B)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 
@@ -469,16 +720,18 @@ fun OrderCardItem(
 
                 // Match Button CTA
                 Button(
-                    onClick = { onSelectForVerify() },
+                    onClick = {
+                        onSelectForVerify()
+                    },
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (order.transactionId.isNotBlank()) 
-                            MaterialTheme.colorScheme.primary 
-                        else 
+                        containerColor = if (order.transactionId.isNotBlank())
+                            MaterialTheme.colorScheme.primary
+                        else
                             MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = if (order.transactionId.isNotBlank()) 
-                            MaterialTheme.colorScheme.onPrimary 
-                        else 
+                        contentColor = if (order.transactionId.isNotBlank())
+                            MaterialTheme.colorScheme.onPrimary
+                        else
                             MaterialTheme.colorScheme.onSecondaryContainer
                     ),
                     shape = RoundedCornerShape(12.dp),

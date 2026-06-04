@@ -110,7 +110,6 @@ class MainActivity : ComponentActivity() {
                         ) {
                             val items = listOf(
                                 Screen.Dashboard,
-                                Screen.SmsInbox,
                                 Screen.MatchEngine,
                                 Screen.Logs,
                                 Screen.Settings

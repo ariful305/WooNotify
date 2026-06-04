@@ -67,7 +67,7 @@ class OrderPollingService : Service() {
         Log.d(TAG, "OrderPollingService onCreate")
         
         val db = AppDatabase.getDatabase(applicationContext)
-        repository = VerifierRepository(db.apiConfigDao(), db.verifyLogDao())
+        repository = VerifierRepository(db.apiConfigDao(), db.verifyLogDao(), db.cachedOrderDao())
         
         createNotificationChannels()
         showServiceNotification()

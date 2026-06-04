@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.util.Log
 import com.example.data.database.ApiConfigDao
+import com.example.data.database.CachedOrderDao
 import com.example.data.database.VerifyLogDao
 import com.example.data.model.*
 import com.example.data.network.VerificationSyncService
@@ -10,6 +11,8 @@ import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -19,16 +22,89 @@ import java.util.concurrent.TimeUnit
 
 class VerifierRepository(
     private val apiConfigDao: ApiConfigDao,
-    private val verifyLogDao: VerifyLogDao
+    private val verifyLogDao: VerifyLogDao,
+    private val cachedOrderDao: CachedOrderDao
 ) {
     private val TAG = "VerifierRepository"
 
     val configFlow: Flow<ApiConfigEntity?> = apiConfigDao.getConfigFlow()
     val allLogsFlow: Flow<List<VerifyLogEntity>> = verifyLogDao.getAllLogsFlow()
 
+    val allCachedOrdersFlow: Flow<List<WooCommerceOrder>> = cachedOrderDao.getAllCachedOrdersFlow()
+        .map { list ->
+            list.map { mapToWooOrder(it) }
+        }
+        .flowOn(Dispatchers.IO)
+
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
         .build()
+
+    private fun mapToCachedEntity(order: WooCommerceOrder): CachedOrderEntity {
+        val itemsSummary = order.lineItems.joinToString(", ") { "${it.quantity}x ${it.name}" }
+        val adapter = moshi.adapter(WooCommerceOrder::class.java)
+        val rawJson = adapter.toJson(order)
+        return CachedOrderEntity(
+            id = order.id,
+            number = order.number,
+            status = order.status,
+            total = order.total,
+            currency = order.currency,
+            dateCreated = order.dateCreated,
+            paymentMethod = order.paymentMethod,
+            paymentMethodTitle = order.paymentMethodTitle,
+            transactionId = order.transactionId,
+            customerName = order.billing.fullName,
+            customerEmail = order.billing.email,
+            customerPhone = order.billing.phone,
+            itemsSummary = itemsSummary,
+            rawJson = rawJson
+        )
+    }
+
+    private fun mapToWooOrder(entity: CachedOrderEntity): WooCommerceOrder {
+        val adapter = moshi.adapter(WooCommerceOrder::class.java)
+        return try {
+            adapter.fromJson(entity.rawJson) ?: WooCommerceOrder(
+                id = entity.id,
+                number = entity.number,
+                status = entity.status,
+                total = entity.total,
+                currency = entity.currency,
+                dateCreated = entity.dateCreated,
+                paymentMethod = entity.paymentMethod,
+                paymentMethodTitle = entity.paymentMethodTitle,
+                transactionId = entity.transactionId,
+                billing = BillingAddress(
+                    firstName = entity.customerName.split(" ").firstOrNull() ?: "",
+                    lastName = entity.customerName.split(" ").drop(1).joinToString(" "),
+                    phone = entity.customerPhone,
+                    email = entity.customerEmail
+                ),
+                lineItems = emptyList()
+            )
+        } catch (e: Exception) {
+            Log.e("VerifierRepository", "Error deserializing cache: ${e.message}")
+            WooCommerceOrder(
+                id = entity.id,
+                number = entity.number,
+                status = entity.status,
+                total = entity.total,
+                currency = entity.currency,
+                dateCreated = entity.dateCreated,
+                paymentMethod = entity.paymentMethod,
+                paymentMethodTitle = entity.paymentMethodTitle,
+                transactionId = entity.transactionId,
+                billing = BillingAddress(
+                    firstName = entity.customerName.split(" ").firstOrNull() ?: "",
+                    lastName = entity.customerName.split(" ").drop(1).joinToString(" "),
+                    phone = entity.customerPhone,
+                    email = entity.customerEmail
+                ),
+                lineItems = emptyList()
+            )
+        }
+    }
 
     // Base Logging HttpClient
     private val okHttpClient: OkHttpClient by lazy {
@@ -102,15 +178,80 @@ class VerifierRepository(
         val service = getWooService(config) ?: return@withContext emptyList()
 
         try {
-            service.getOrders(
+            val orders = service.getOrders(
                 status = status,
                 consumerKey = config.consumerKey,
                 consumerSecret = config.consumerSecret
             )
+            val entities = orders.map { mapToCachedEntity(it) }
+            cachedOrderDao.insertCachedOrders(entities)
+
+            // Cache Sync & Cleanup: Remove trashed or deleted WooCommerce orders from our local DB cache
+            try {
+                if (status.isNullOrBlank()) {
+                    // Fetching all (or default query with no status restrictions).
+                    // Any order stored locally that is not returned in the fetched active list is deleted.
+                    val fetchedIds = orders.map { it.id }.toSet()
+                    val allCached = cachedOrderDao.getAllCachedOrders()
+                    val staleEntities = allCached.filter { it.id !in fetchedIds }
+                    for (stale in staleEntities) {
+                        cachedOrderDao.deleteCachedOrderById(stale.id)
+                        Log.d(TAG, "Sync: Removed trashed/deleted order #${stale.number} from cache.")
+                    }
+                } else {
+                    // Fetching a specific subset of statuses (e.g. "pending,on-hold,processing").
+                    // If a locally cached order has one of these status types, but is NOT returned in the fresh fetch,
+                    // it means it has been trashed/deleted on the web or transitioned to another status (e.g. completed).
+                    val fetchedIds = orders.map { it.id }.toSet()
+                    val filterStatuses = status.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+                    if (filterStatuses.isNotEmpty()) {
+                        val allCached = cachedOrderDao.getAllCachedOrders()
+                        val staleEntities = allCached.filter { cached ->
+                            cached.status.lowercase() in filterStatuses && cached.id !in fetchedIds
+                        }
+                        for (stale in staleEntities) {
+                            cachedOrderDao.deleteCachedOrderById(stale.id)
+                            Log.d(TAG, "Sync status update: Removed stale order #${stale.number} from cache.")
+                        }
+                    }
+                }
+            } catch (cacheEx: Exception) {
+                Log.e(TAG, "Failsafe: error cleaning redundant cached orders: ${cacheEx.message}")
+            }
+
+            orders
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching orders: ${e.message}", e)
             throw e
         }
+    }
+
+    suspend fun updateOrderStatus(orderId: Long, newStatus: String): WooCommerceOrder = withContext(Dispatchers.IO) {
+        val config = apiConfigDao.getConfig() ?: throw Exception("API configuration is not set up")
+        val service = getWooService(config) ?: throw Exception("Cannot initialize WooCommerce service")
+
+        try {
+            val updatedOrder = service.updateOrderStatus(
+                orderId = orderId,
+                body = OrderStatusUpdate(status = newStatus),
+                consumerKey = config.consumerKey,
+                consumerSecret = config.consumerSecret
+            )
+            // Save updated order directly in the database so the UI gets it instantly
+            cachedOrderDao.insertCachedOrder(mapToCachedEntity(updatedOrder))
+            updatedOrder
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating order status: ${e.message}", e)
+            throw e
+        }
+    }
+
+    suspend fun deleteCachedOrder(orderId: Long) = withContext(Dispatchers.IO) {
+        cachedOrderDao.deleteCachedOrderById(orderId)
+    }
+
+    suspend fun clearCachedOrders() = withContext(Dispatchers.IO) {
+        cachedOrderDao.clearAllCachedOrders()
     }
 
     suspend fun hasTransactionBeenProcessed(txnId: String): Boolean = withContext(Dispatchers.IO) {

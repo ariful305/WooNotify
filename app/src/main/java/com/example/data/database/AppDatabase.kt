@@ -5,12 +5,14 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.example.data.model.ApiConfigEntity
+import com.example.data.model.CachedOrderEntity
 import com.example.data.model.VerifyLogEntity
 
-@Database(entities = [ApiConfigEntity::class, VerifyLogEntity::class], version = 1, exportSchema = false)
+@Database(entities = [ApiConfigEntity::class, VerifyLogEntity::class, CachedOrderEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun apiConfigDao(): ApiConfigDao
     abstract fun verifyLogDao(): VerifyLogDao
+    abstract fun cachedOrderDao(): CachedOrderDao
 
     companion object {
         @Volatile

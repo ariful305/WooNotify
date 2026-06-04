@@ -2,6 +2,7 @@ package com.example.data.database
 
 import androidx.room.*
 import com.example.data.model.ApiConfigEntity
+import com.example.data.model.CachedOrderEntity
 import com.example.data.model.VerifyLogEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -39,4 +40,28 @@ interface VerifyLogDao {
 
     @Query("DELETE FROM verification_logs")
     suspend fun deleteAllLogs()
+}
+
+@Dao
+interface CachedOrderDao {
+    @Query("SELECT * FROM cached_orders ORDER BY id DESC")
+    fun getAllCachedOrdersFlow(): Flow<List<CachedOrderEntity>>
+
+    @Query("SELECT * FROM cached_orders ORDER BY id DESC")
+    suspend fun getAllCachedOrders(): List<CachedOrderEntity>
+
+    @Query("SELECT * FROM cached_orders WHERE id = :id LIMIT 1")
+    suspend fun getCachedOrderById(id: Long): CachedOrderEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCachedOrders(orders: List<CachedOrderEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCachedOrder(order: CachedOrderEntity)
+
+    @Query("DELETE FROM cached_orders WHERE id = :id")
+    suspend fun deleteCachedOrderById(id: Long)
+
+    @Query("DELETE FROM cached_orders")
+    suspend fun clearAllCachedOrders()
 }

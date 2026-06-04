@@ -50,7 +50,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "MainViewModel"
 
     private val db = AppDatabase.getDatabase(application)
-    private val repository = VerifierRepository(db.apiConfigDao(), db.verifyLogDao())
+    private val repository = VerifierRepository(db.apiConfigDao(), db.verifyLogDao(), db.cachedOrderDao())
 
     private val seenOrderIds = mutableSetOf<Long>()
     private var isFirstOrderFetch = true
@@ -96,6 +96,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val notificationMessage: SharedFlow<String> = _notificationMessage.asSharedFlow()
 
     init {
+        // Listen to local Room cached orders and push them directly to _ordersList reactively!
+        viewModelScope.launch {
+            repository.allCachedOrdersFlow.collect { cached ->
+                _ordersList.value = cached
+                if (_ordersUiState.value is OrdersUiState.Idle || _ordersUiState.value is OrdersUiState.Loading) {
+                    if (cached.isNotEmpty()) {
+                        _ordersUiState.value = OrdersUiState.Success(cached)
+                    }
+                }
+            }
+        }
+
         // Observe live incoming SMS messages from the broadcast receiver bus!
         viewModelScope.launch {
             SmsArrivalEventBus.incomingSmsFlow.collect { incomingSms ->
@@ -167,18 +179,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Pulls open / pending orders from WooCommerce.
      */
+    /**
+     * Pulls open / pending / processing / completed WooCommerce orders asynchronously and caches them.
+     */
     fun refreshOrders(statusFilter: String? = "pending,on-hold,processing") {
         viewModelScope.launch {
             _ordersUiState.value = OrdersUiState.Loading
             try {
                 val orders = repository.fetchOrders(status = statusFilter)
-                _ordersList.value = orders
                 _ordersUiState.value = OrdersUiState.Success(orders)
             } catch (e: Exception) {
-                _ordersUiState.value = OrdersUiState.Error(
-                    e.localizedMessage ?: "Failed to contact WooCommerce store"
-                )
+                if (_ordersList.value.isNotEmpty()) {
+                    _ordersUiState.value = OrdersUiState.Success(_ordersList.value)
+                    _notificationMessage.tryEmit("Sync skipped (reading offline cache): ${e.localizedMessage ?: "No internet connection"}")
+                } else {
+                    _ordersUiState.value = OrdersUiState.Error(
+                        e.localizedMessage ?: "Failed to contact WooCommerce store"
+                    )
+                }
             }
+        }
+    }
+
+    private val _orderUpdateState = MutableStateFlow<MatchActionState>(MatchActionState.Idle)
+    val orderUpdateState: StateFlow<MatchActionState> = _orderUpdateState.asStateFlow()
+
+    fun updateOrderStatus(orderId: Long, newStatus: String) {
+        viewModelScope.launch {
+            _orderUpdateState.value = MatchActionState.Processing
+            try {
+                val updated = repository.updateOrderStatus(orderId, newStatus)
+                _orderUpdateState.value = MatchActionState.Success(
+                    VerifyLogEntity(
+                        orderId = orderId,
+                        orderNumber = updated.number,
+                        customerName = updated.billing.fullName,
+                        orderTotal = updated.total,
+                        orderTransactionId = updated.transactionId,
+                        smsTransactionId = "",
+                        smsSender = "",
+                        smsBody = "",
+                        verificationStatus = "UPDATED (Status: $newStatus)",
+                        wooUpdated = true,
+                        serverSynced = false
+                    )
+                )
+                _notificationMessage.tryEmit("Order #${updated.number} status updated to: $newStatus")
+            } catch (e: Exception) {
+                _orderUpdateState.value = MatchActionState.Error(e.localizedMessage ?: "Failed to change status on WooCommerce")
+                _notificationMessage.tryEmit("Status update failed: ${e.localizedMessage ?: "Unknown"}")
+            }
+        }
+    }
+
+    fun clearCachedOrders() {
+        viewModelScope.launch {
+            repository.clearCachedOrders()
         }
     }
 

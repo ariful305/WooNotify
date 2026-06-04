@@ -4,7 +4,10 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -18,6 +21,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.MainViewModel
@@ -41,6 +46,12 @@ fun MatchEngineScreen(
     var syncCustomServerSelected by remember { mutableStateOf(true) }
 
     var showSuccessDialog by remember { mutableStateOf(false) }
+    var showSmsSelectDialog by remember { mutableStateOf(false) }
+    val smsList by viewModel.smsList.collectAsState()
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshSmsInbox()
+    }
 
     // Derive target transaction ID to use
     val orderTxId = selectedOrder?.transactionId?.trim() ?: ""
@@ -265,7 +276,7 @@ fun MatchEngineScreen(
                     )
                     
                     TextButton(
-                        onClick = { onNavigateToSms() },
+                        onClick = { showSmsSelectDialog = true },
                         contentPadding = PaddingValues(0.dp)
                     ) {
                         Text(if (selectedSms != null) "Change SMS" else "Select SMS")
@@ -565,6 +576,78 @@ fun MatchEngineScreen(
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
+            )
+        }
+
+        // INLINE SMS SELECT DIALOG
+        if (showSmsSelectDialog) {
+            AlertDialog(
+                onDismissRequest = { showSmsSelectDialog = false },
+                title = { Text("Select Payment SMS") },
+                text = {
+                    Box(modifier = Modifier.heightIn(max = 350.dp)) {
+                        if (smsList.isEmpty()) {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No SMS messages found in phone inbox. Verify read permissions are granted.",
+                                    textAlign = TextAlign.Center,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(smsList) { sms ->
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                viewModel.selectSmsForVerification(sms)
+                                                showSmsSelectDialog = false
+                                            },
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = sms.sender,
+                                                    fontWeight = FontWeight.Bold,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                                val readableDate = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.getDefault()).format(java.util.Date(sms.timestamp))
+                                                Text(
+                                                    text = readableDate,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = sms.body,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showSmsSelectDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
             )
         }
     }

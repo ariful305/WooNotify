@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.service.OrderPollingService
 import com.example.ui.MainViewModel
 import com.example.ui.screens.*
 import com.example.ui.theme.MyApplicationTheme
@@ -45,6 +46,9 @@ class MainActivity : ComponentActivity() {
                 requestPermissions(arrayOf(permission), 101)
             }
         }
+        
+        // Start background order polling Foreground Service for real-time push alerts
+        OrderPollingService.startService(this)
         
         setContent {
             MyApplicationTheme {

@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -23,6 +24,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ApiConfigEntity
+import com.example.service.OrderPollingService
 import com.example.ui.ConnectionTestState
 import com.example.ui.MainViewModel
 
@@ -33,6 +35,9 @@ fun SettingsScreen(
 ) {
     val databaseConfig by viewModel.apiConfig.collectAsState()
     val testState by viewModel.connectionTestState.collectAsState()
+
+    val context = LocalContext.current
+    var serviceActive by remember { mutableStateOf(false) }
 
     var wooUrl by remember { mutableStateOf("") }
     var consumerKey by remember { mutableStateOf("") }
@@ -49,6 +54,7 @@ fun SettingsScreen(
         consumerSecret = databaseConfig.consumerSecret
         syncServerUrl = databaseConfig.syncServerUrl
         autoVerify = databaseConfig.autoVerify
+        serviceActive = OrderPollingService.isServiceRunning(context)
     }
 
     Column(
@@ -197,6 +203,59 @@ fun SettingsScreen(
                     checked = autoVerify,
                     onCheckedChange = { autoVerify = it },
                     modifier = Modifier.testTag("auto_verify_switch")
+                )
+            }
+        }
+
+        // BACKGROUND SERVICE TRACKER
+        Text(
+            text = "Background Tracker & Notifications",
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Real-time WooCommerce Order Service",
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "Runs a high-priority persistent background service on your phone that constantly tracks new orders and alerts you instantly on receipt.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (serviceActive) "Status: ACTIVE (Continuous Tracking)" else "Status: INACTIVE",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = if (serviceActive) Color(0xFF059669) else MaterialTheme.colorScheme.error
+                    )
+                }
+                
+                Switch(
+                    checked = serviceActive,
+                    onCheckedChange = { active ->
+                        if (active) {
+                            OrderPollingService.startService(context)
+                        } else {
+                            OrderPollingService.stopService(context)
+                        }
+                        serviceActive = active
+                    },
+                    modifier = Modifier.testTag("service_status_switch")
                 )
             }
         }

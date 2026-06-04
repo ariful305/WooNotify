@@ -107,9 +107,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 checkInstantAutoMatch(incomingSms)
             }
         }
-        
-        // Start polling WooCommerce for new orders in real-time
-        startOrderPolling()
     }
 
     /**
